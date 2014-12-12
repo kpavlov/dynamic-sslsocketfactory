@@ -34,8 +34,8 @@ import java.net.InetAddress;
 import java.net.Socket;
 import java.security.KeyStore;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Function;
 
 public class DynamicSSLSocketFactory extends SSLSocketFactory {
 
@@ -44,48 +44,30 @@ public class DynamicSSLSocketFactory extends SSLSocketFactory {
     private final KeyStoreProvider keyStoreProvider;
     private final KeyPasswordProvider keyPasswordProvider;
 
-    private final Map<String, SSLSocketFactory> sslSocketFactoryMap = new ConcurrentHashMap<String, SSLSocketFactory>() {
-        @Override
-        public SSLSocketFactory computeIfAbsent(String host, Function<? super String, ? extends SSLSocketFactory> mappingFunction) {
-            try {
-                final KeyStore keyStore = keyStoreProvider.getKeyStore(host);
-                final KeyStore trustStore = keyStoreProvider.getTrustStore(host);
-                final char[] keyPassword = keyPasswordProvider.getPassword(host);
+    private final Map<String, SSLSocketFactory> sslSocketFactoryMap = new ConcurrentHashMap<>();
 
-                final SSLContextBuilder contextBuilder = SSLContexts.custom();
-                if (keyStore != null) {
-                    contextBuilder.loadKeyMaterial(keyStore, keyPassword);
-                }
-                if (trustStore != null) {
-                    contextBuilder.loadTrustMaterial(trustStore);
-                }
-
-                SSLContext sslContext = contextBuilder
-                        .useTLS()
-                        .build();
-
-                return sslContext.getSocketFactory();
-            } catch (Exception e) {
-                LOGGER.error("Unable to create SSLContext", e);
-            }
-
-            return null;
-        }
-    };
+    private final String[] defaultCipherSuites;
+    private final String[] supportedCipherSuites;
 
     public DynamicSSLSocketFactory(KeyStoreProvider keyStoreProvider, KeyPasswordProvider keyPasswordProvider) {
+        Objects.requireNonNull(keyStoreProvider, "KeyStoreProvider is required");
+        Objects.requireNonNull(keyPasswordProvider, "KeyPasswordProvider is required");
         this.keyPasswordProvider = keyPasswordProvider;
         this.keyStoreProvider = keyStoreProvider;
+
+        SSLSocketFactory systemDefaultFactory = SSLContexts.createSystemDefault().getSocketFactory();
+        defaultCipherSuites = systemDefaultFactory.getDefaultCipherSuites();
+        supportedCipherSuites = systemDefaultFactory.getSupportedCipherSuites();
     }
 
     @Override
     public String[] getDefaultCipherSuites() {
-        throw new UnsupportedOperationException("Method is not implemented: com.github.kpavlov.ssl.DynamicSSLSocketFactory.getDefaultCipherSuites");
+        return defaultCipherSuites;
     }
 
     @Override
     public String[] getSupportedCipherSuites() {
-        throw new UnsupportedOperationException("Method is not implemented: com.github.kpavlov.ssl.DynamicSSLSocketFactory.getSupportedCipherSuites");
+        return supportedCipherSuites;
     }
 
     /**
@@ -116,8 +98,33 @@ public class DynamicSSLSocketFactory extends SSLSocketFactory {
         return getSslSocketFactory(address.getHostName()).createSocket(address, port, localAddress, localPort);
     }
 
-    private SSLSocketFactory getSslSocketFactory(String host) {
-        return sslSocketFactoryMap.get(host);
+    private SSLSocketFactory getSslSocketFactory(final String host) {
+        return sslSocketFactoryMap.computeIfAbsent(host, (h) -> createSSLSocketFactory(h));
     }
 
+    private SSLSocketFactory createSSLSocketFactory(String host) {
+        try {
+            final KeyStore keyStore = keyStoreProvider.getKeyStore(host);
+            final KeyStore trustStore = keyStoreProvider.getTrustStore(host);
+            final char[] keyPassword = keyPasswordProvider.getPassword(host);
+
+            final SSLContextBuilder contextBuilder = SSLContexts.custom();
+            if (keyStore != null) {
+                contextBuilder.loadKeyMaterial(keyStore, keyPassword);
+            }
+            if (trustStore != null) {
+                contextBuilder.loadTrustMaterial(trustStore);
+            }
+
+            SSLContext sslContext = contextBuilder
+                    .useTLS()
+                    .build();
+
+            return sslContext.getSocketFactory();
+        } catch (Exception e) {
+            LOGGER.error("Unable to create SSLContext", e);
+        }
+
+        return null;
+    }
 }
